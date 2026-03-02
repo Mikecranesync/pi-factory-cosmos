@@ -21,9 +21,11 @@ import logging
 import time
 from typing import Any
 
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from pifactory.backend.config import Config
@@ -231,6 +233,49 @@ def create_app(
         """Serve the demo fallback dashboard."""
         from pifactory.hmi.dashboard import render_dashboard
         return render_dashboard()
+
+    # ------------------------------------------------------------------
+    # Camera endpoints
+    # ------------------------------------------------------------------
+
+    @app.get("/api/camera/frame")
+    async def camera_frame():
+        """Return a single JPEG snapshot from the configured video source."""
+        from pifactory.cosmos.frame_capture import capture_frame
+
+        if not cfg.video_source:
+            return Response(content=b"No video source configured", status_code=503)
+        jpeg = capture_frame(cfg.video_source)
+        if jpeg is None:
+            return Response(content=b"Failed to capture frame", status_code=503)
+        return Response(content=jpeg, media_type="image/jpeg")
+
+    @app.get("/api/camera/stream")
+    async def camera_stream():
+        """MJPEG streaming endpoint — multipart boundary push at ~10 fps."""
+        from pifactory.cosmos.frame_capture import capture_stream
+
+        if not cfg.video_source:
+            return Response(content=b"No video source configured", status_code=503)
+
+        async def mjpeg_generator():
+            for frame in capture_stream(cfg.video_source, fps=10):
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + frame + b"\r\n"
+                )
+                await asyncio.sleep(0)  # yield control to event loop
+
+        return StreamingResponse(
+            mjpeg_generator(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
+
+    @app.get("/camera", response_class=HTMLResponse)
+    async def camera_page():
+        """Serve the live webcam page."""
+        from pifactory.hmi.camera_page import render_camera_page
+        return render_camera_page()
 
     return app
 

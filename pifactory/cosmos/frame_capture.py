@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
 from pathlib import Path
+from typing import Generator
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,56 @@ def capture_frame(source: str = "") -> bytes | None:
     except Exception:
         logger.exception("Frame capture error for source: %s", source)
         return None
+    finally:
+        if cap is not None:
+            cap.release()
+
+
+def capture_stream(source: str = "", fps: int = 10) -> Generator[bytes, None, None]:
+    """Yield JPEG frames continuously for MJPEG streaming.
+
+    Keeps the capture device open for smooth streaming, unlike
+    capture_frame() which opens/closes each call.
+    """
+    if not source:
+        return
+
+    try:
+        import cv2
+    except ImportError:
+        logger.warning("opencv-python-headless not installed — streaming disabled")
+        return
+
+    cap = None
+    try:
+        if source.isdigit():
+            cap = cv2.VideoCapture(int(source))
+        elif source.startswith("rtsp://") or source.startswith("http"):
+            cap = cv2.VideoCapture(source)
+        elif Path(source).is_file():
+            cap = cv2.VideoCapture(str(source))
+        else:
+            logger.warning("Unknown video source: %s", source)
+            return
+
+        if not cap.isOpened():
+            logger.warning("Failed to open video source for streaming: %s", source)
+            return
+
+        delay = 1.0 / fps
+        while True:
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                logger.warning("Lost frame from source: %s", source)
+                break
+            _, buf = cv2.imencode(".jpg", frame)
+            yield buf.tobytes()
+            time.sleep(delay)
+
+    except GeneratorExit:
+        pass
+    except Exception:
+        logger.exception("Stream capture error for source: %s", source)
     finally:
         if cap is not None:
             cap.release()

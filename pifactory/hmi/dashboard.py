@@ -240,6 +240,7 @@ def render_dashboard() -> str:
             <div class="subtitle">Industrial AI Diagnostics — Cosmos Reason 2</div>
         </div>
         <div style="display:flex;align-items:center;gap:12px;">
+            <a href="/camera" class="nvidia-badge" style="text-decoration:none;">Camera</a>
             <span class="nvidia-badge" id="modelBadge">--</span>
             <div class="pulse"></div>
         </div>
