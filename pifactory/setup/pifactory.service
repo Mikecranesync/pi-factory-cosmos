@@ -1,0 +1,17 @@
+[Unit]
+Description=Pi-Factory Tag Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/pifactory/config.env
+WorkingDirectory=/opt/pifactory
+ExecStart=/opt/pifactory/.venv/bin/python -m uvicorn pifactory.backend.tag_server:create_app --factory --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

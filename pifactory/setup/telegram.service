@@ -1,0 +1,17 @@
+[Unit]
+Description=Pi-Factory Telegram Bot
+After=network.target pifactory.service
+Wants=pifactory.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/pifactory/config.env
+WorkingDirectory=/opt/pifactory
+ExecStart=/opt/pifactory/.venv/bin/python -c "from pifactory.telegram.bot import PiFactoryBot; import os; bot = PiFactoryBot(token=os.environ['TELEGRAM_BOT_TOKEN'], api_base='http://localhost:8080', allowed_chat_ids=os.environ.get('ALLOWED_CHAT_IDS','').split(',')); app = bot.build_app(); app.run_polling(drop_pending_updates=True)"
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

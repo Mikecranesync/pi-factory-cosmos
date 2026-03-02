@@ -1,0 +1,10 @@
+{
+  "motor_running":   {"label": "Motor",          "unit": "",    "type": "bool"},
+  "motor_speed":     {"label": "Motor Speed",    "unit": "%",   "type": "int",   "min": 0,   "max": 100},
+  "motor_current":   {"label": "Motor Current",  "unit": "A",   "type": "float", "min": 0.0, "max": 10.0},
+  "temperature":     {"label": "Temperature",    "unit": "°C",  "type": "float", "min": 15.0,"max": 100.0},
+  "pressure":        {"label": "Pressure",       "unit": "PSI", "type": "int",   "min": 0,   "max": 150},
+  "conveyor_running":{"label": "Conveyor",       "unit": "",    "type": "bool"},
+  "sensor_1":        {"label": "Sensor 1 (Entry)","unit": "",   "type": "bool"},
+  "sensor_2":        {"label": "Sensor 2 (Exit)", "unit": "",   "type": "bool"}
+}

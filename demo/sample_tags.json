@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-03-02T14:30:00.000Z",
+  "node_id": "sim-micro820",
+  "motor_running": true,
+  "motor_speed": 60,
+  "motor_current": 6.8,
+  "temperature": 72.3,
+  "pressure": 98,
+  "conveyor_running": true,
+  "conveyor_speed": 0,
+  "sensor_1": true,
+  "sensor_2": true,
+  "fault_alarm": true,
+  "e_stop": false,
+  "error_code": 3,
+  "error_message": "Conveyor jam"
+}

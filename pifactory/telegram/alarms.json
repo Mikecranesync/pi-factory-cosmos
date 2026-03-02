@@ -1,0 +1,18 @@
+{
+  "0":  "No fault — system running normally",
+  "1":  "Motor overload — current exceeds safe limit, check for jams or bearing wear",
+  "2":  "Temperature high — cooling may be blocked, reduce load or check fans",
+  "3":  "Conveyor jam — product stuck at sensors, clear obstruction before restart",
+  "4":  "Sensor failure — photoeye not responding, check wiring and alignment",
+  "5":  "Communication loss — fieldbus timeout, check cables and network switch",
+  "6":  "VFD fault — variable frequency drive tripped, check VFD display for code",
+  "7":  "Low pressure — pneumatic supply below threshold, check compressor",
+  "8":  "E-Stop active — emergency stop engaged, verify area is safe before reset",
+  "9":  "Guard door open — safety enclosure not closed, close door to enable restart",
+  "10": "Belt slip — motor running but belt not moving, check tension",
+  "11": "Overtravel — actuator exceeded limit switch, check for mechanical obstruction",
+  "12": "Phase loss — three-phase power imbalance, check incoming supply",
+  "13": "Ground fault — leakage current detected, inspect motor insulation",
+  "14": "PLC battery low — backup battery needs replacement",
+  "15": "Watchdog timeout — PLC scan time exceeded, check program complexity"
+}
