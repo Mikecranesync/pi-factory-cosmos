@@ -6,3 +6,4 @@ python-telegram-bot>=20.0,<22.0
 pyyaml>=6.0,<7.0
 opencv-python-headless>=4.8,<5.0
 Pillow>=10.0,<11.0
+pymodbus>=3.5,<4.0

@@ -225,6 +225,150 @@ def detect_faults(tags: Dict[str, Any]) -> List[FaultDiagnosis]:
             affected_tags=["temperature"],
         ))
 
+    # ------------------------------------------------------------------
+    # VFD conflict checks (only fire when VFD tags are present)
+    # ------------------------------------------------------------------
+
+    if "vfd_output_hz" in tags:
+        vfd_hz = float(tags.get("vfd_output_hz", 0))
+        vfd_setpoint = float(tags.get("vfd_setpoint_hz", 0))
+        vfd_amps = float(tags.get("vfd_output_amps", 0))
+        vfd_run = bool(tags.get("vfd_run_status", False))
+        vfd_fault = int(tags.get("vfd_fault_code", 0))
+        vfd_torque = float(tags.get("vfd_torque_pct", 0))
+        belt_rpm = float(tags.get("belt_rpm", tags.get("rpm", 0)))
+        belt_status = str(tags.get("belt_vision_status", ""))
+
+        # V001: Belt stopped while VFD running
+        if vfd_hz > 10 and belt_rpm < 5:
+            faults.append(FaultDiagnosis(
+                fault_code="V001",
+                severity=FaultSeverity.CRITICAL,
+                title="Belt Stopped While VFD Running",
+                description=f"VFD output is {vfd_hz:.1f} Hz but belt RPM is {belt_rpm:.1f}.",
+                likely_causes=[
+                    "Belt slipping on drive roller",
+                    "Coupling between motor and roller failed",
+                    "Mechanical jam downstream of drive",
+                ],
+                suggested_checks=[
+                    "Inspect belt tension and drive roller grip",
+                    "Check motor coupling for shear pin or keyway failure",
+                    "Look for jammed material on conveyor",
+                    "Compare VFD output current to normal — high current = jam, low = no load (coupling)",
+                ],
+                affected_tags=["vfd_output_hz", "belt_rpm"],
+                requires_maintenance=True,
+            ))
+
+        # V002: VFD running but no current drawn
+        if vfd_run and vfd_amps < 0.5:
+            faults.append(FaultDiagnosis(
+                fault_code="V002",
+                severity=FaultSeverity.CRITICAL,
+                title="VFD Running But No Current Drawn",
+                description=f"VFD run status is ON but output current is only {vfd_amps:.1f} A.",
+                likely_causes=[
+                    "Motor contactor not pulled in",
+                    "Cable fault between VFD and motor",
+                    "Motor winding open circuit",
+                ],
+                suggested_checks=[
+                    "Check motor contactor — is it energized?",
+                    "Verify wiring from VFD output to motor terminals",
+                    "Megger test motor windings",
+                    "Check VFD output phase loss fault history",
+                ],
+                affected_tags=["vfd_run_status", "vfd_output_amps"],
+                requires_maintenance=True,
+            ))
+
+        # V003: VFD can't reach setpoint
+        if vfd_setpoint > 5 and (vfd_setpoint - vfd_hz) > 5:
+            faults.append(FaultDiagnosis(
+                fault_code="V003",
+                severity=FaultSeverity.WARNING,
+                title="VFD Cannot Reach Setpoint",
+                description=f"VFD setpoint is {vfd_setpoint:.1f} Hz but actual is {vfd_hz:.1f} Hz (gap: {vfd_setpoint - vfd_hz:.1f} Hz).",
+                likely_causes=[
+                    "Motor overloaded — mechanical drag",
+                    "VFD current limit active",
+                    "Acceleration ramp too slow for load",
+                ],
+                suggested_checks=[
+                    "Check VFD output current vs rated current",
+                    "Inspect conveyor for increased drag or load",
+                    "Review VFD acceleration time parameter",
+                    "Check if VFD current limit is active",
+                ],
+                affected_tags=["vfd_setpoint_hz", "vfd_output_hz"],
+            ))
+
+        # V004: VFD faulted but PLC says motor running
+        if vfd_fault > 0 and motor_running:
+            faults.append(FaultDiagnosis(
+                fault_code="V004",
+                severity=FaultSeverity.CRITICAL,
+                title="VFD Faulted But PLC Shows Motor Running",
+                description=f"VFD fault code {vfd_fault} active but PLC motor_running=True.",
+                likely_causes=[
+                    "PLC feedback wired incorrectly",
+                    "VFD run relay not wired to PLC input",
+                    "PLC program not reading VFD fault status",
+                ],
+                suggested_checks=[
+                    "Check VFD fault relay wiring to PLC",
+                    "Verify PLC input for VFD run feedback",
+                    "Review PLC program fault handling logic",
+                    "Clear VFD fault and verify PLC updates",
+                ],
+                affected_tags=["vfd_fault_code", "motor_running"],
+                requires_maintenance=True,
+            ))
+
+        # V005: Overspeed + overtemp
+        if vfd_hz > 55 and temperature > 70:
+            faults.append(FaultDiagnosis(
+                fault_code="V005",
+                severity=FaultSeverity.WARNING,
+                title="High Speed + Elevated Temperature",
+                description=f"VFD at {vfd_hz:.1f} Hz with temperature {temperature:.1f}°C.",
+                likely_causes=[
+                    "Sustained high-speed operation without cooling",
+                    "Ambient temperature too high",
+                    "Cooling fan failure",
+                ],
+                suggested_checks=[
+                    "Check cooling fan operation",
+                    "Reduce speed or allow cooldown period",
+                    "Verify ambient temperature in enclosure",
+                    "Check for blocked ventilation",
+                ],
+                affected_tags=["vfd_output_hz", "temperature"],
+            ))
+
+        # V006: Belt mistrack + high torque
+        if belt_status == "MISTRACK" and vfd_torque > 90:
+            faults.append(FaultDiagnosis(
+                fault_code="V006",
+                severity=FaultSeverity.WARNING,
+                title="Belt Mistrack With High Torque",
+                description=f"Belt drifting (vision: MISTRACK) while VFD torque is {vfd_torque:.0f}%.",
+                likely_causes=[
+                    "Mechanical binding on idler or edge roller",
+                    "Belt edge rubbing on frame",
+                    "Uneven load distribution",
+                ],
+                suggested_checks=[
+                    "Inspect belt tracking — is it rubbing on frame?",
+                    "Check idler rollers for free rotation",
+                    "Verify belt tension is even across width",
+                    "Look for material buildup on rollers",
+                ],
+                affected_tags=["belt_vision_status", "vfd_torque_pct"],
+                requires_maintenance=True,
+            ))
+
     # WARNING: Generic PLC Fault
     if fault_alarm and error_code > 0:
         faults.append(FaultDiagnosis(

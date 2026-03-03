@@ -147,7 +147,7 @@ the belt width; a vision-based tachometer is tracking it.
 ## Live PLC Tags
 {tags_json}
 
-## Vision Tachometer Reading
+{vfd_section}## Vision Tachometer Reading
 - RPM: {rpm:.1f}
 - Belt speed: {speed_pct:.0f}% of baseline
 - Tracking offset: {offset_px}px from calibrated center
@@ -161,6 +161,8 @@ the belt width; a vision-based tachometer is tracking it.
 3. Cross-reference visual observations with the PLC tag values — flag any
    discrepancy (e.g., motor register says ON but belt is not moving).
 4. Provide a root cause and recommended action.
+5. Cross-reference VFD output frequency with belt RPM — if VFD says
+   running but belt is stopped, flag it as belt slip or coupling failure.
 
 Answer using the following format:
 <think>Step-by-step reasoning about what you see in the video, what the PLC
@@ -181,6 +183,7 @@ def build_belt_vision_prompt(
     speed_pct: float,
     offset_px: int,
     vision_status: str,
+    vfd_tags: Dict[str, Any] = None,
 ) -> str:
     """Fill the belt vision prompt template with live data."""
     import json
@@ -188,8 +191,16 @@ def build_belt_vision_prompt(
         {k: v for k, v in tags.items() if not k.startswith("_") and k not in ("id", "timestamp", "node_id")},
         indent=2,
     )
+    vfd_section = ""
+    if vfd_tags and vfd_tags.get("vfd_comms_ok"):
+        vfd_json = json.dumps(
+            {k: v for k, v in vfd_tags.items() if k.startswith("vfd_") and k not in ("vfd_comms_error",)},
+            indent=2,
+        )
+        vfd_section = f"## VFD Drive Status\n{vfd_json}\n\n"
     return BELT_VISION_PROMPT.format(
         tags_json=tags_json,
+        vfd_section=vfd_section,
         rpm=rpm,
         speed_pct=speed_pct,
         offset_px=offset_px,

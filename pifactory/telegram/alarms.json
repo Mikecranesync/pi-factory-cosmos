@@ -14,5 +14,15 @@
   "12": "Phase loss — three-phase power imbalance, check incoming supply",
   "13": "Ground fault — leakage current detected, inspect motor insulation",
   "14": "PLC battery low — backup battery needs replacement",
-  "15": "Watchdog timeout — PLC scan time exceeded, check program complexity"
+  "15": "Watchdog timeout — PLC scan time exceeded, check program complexity",
+  "20": "VFD overcurrent (OC) — motor drawing too much, check for jam or reduce load",
+  "21": "VFD overvoltage (OV) — regen or input spike, check decel ramp and input power",
+  "22": "VFD undervoltage (UV) — input power sag or loss, check supply voltage",
+  "23": "VFD overtemperature — drive or motor too hot, check fan and reduce duty cycle",
+  "24": "VFD ground fault — motor winding or cable fault, megger test motor and cable",
+  "25": "VFD input phase loss — missing phase on input, check 3-phase supply",
+  "26": "VFD output phase loss — motor or cable open phase, check motor terminals and cable",
+  "27": "VFD comms loss — Modbus timeout, check Ethernet cable to VFD",
+  "28": "VFD external fault — input from PLC/safety relay, check E-stop and safety chain",
+  "29": "VFD unknown fault — check VFD display panel for details"
 }

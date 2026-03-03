@@ -260,6 +260,19 @@ def render_dashboard() -> str:
             </div>
         </div>
 
+        <!-- VFD Live Data -->
+        <div class="panel" id="vfdPanel">
+            <div class="panel-header">
+                <h2>VFD Live Data</h2>
+                <span class="meta-tag" id="vfdComms">--</span>
+            </div>
+            <div class="panel-body">
+                <div class="tag-grid" id="vfdGrid">
+                    <div class="tag-item"><span class="tag-name">VFD not connected</span></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Faults -->
         <div class="panel">
             <div class="panel-header">
@@ -301,7 +314,7 @@ def render_dashboard() -> str:
     </div>
 
     <div class="footer">
-        Pi-Factory v1.0 | Powered by <a href="https://build.nvidia.com" target="_blank">NVIDIA Cosmos Reason 2</a>
+        Pi-Factory v2.0 | Powered by <a href="https://build.nvidia.com" target="_blank">NVIDIA Cosmos Reason 2</a>
         | Hardware: <a href="https://www.hms-networks.com/anybus" target="_blank">HMS Anybus CompactCom</a>
     </div>
 
@@ -413,9 +426,62 @@ def render_dashboard() -> str:
             btn.disabled = false;
         }
 
-        fetchTags(); fetchFaults();
+        const VFD_TC = {
+            vfd_output_hz:    {label:'Output Hz',    type:'hz',   warn:30, crit:5},
+            vfd_setpoint_hz:  {label:'Setpoint Hz',  type:'hz'},
+            vfd_output_amps:  {label:'Current',      type:'amps', crit:5.0},
+            vfd_motor_rpm:    {label:'Motor RPM',    type:'int'},
+            vfd_torque_pct:   {label:'Torque',       type:'pct',  warn:80, crit:110},
+            vfd_drive_temp_c: {label:'Drive Temp',   type:'temp', warn:60, crit:70},
+            vfd_dc_bus_volts: {label:'volts',        type:'int'},
+            vfd_run_status:   {label:'Run Status',   type:'bool'},
+            vfd_fault_code:   {label:'Fault',        type:'fault'},
+        };
+        function fmtVfd(key, val, c) {
+            if (!c) return {t:String(val),c:''};
+            switch(c.type) {
+                case 'hz':     return {t:parseFloat(val).toFixed(1)+' Hz', c:c.crit!==undefined&&val<c.crit?'critical':c.warn!==undefined&&val<c.warn?'warning':''};
+                case 'amps':   return {t:parseFloat(val).toFixed(1)+' A',  c:c.crit&&val>c.crit?'critical':''};
+                case 'pct':    return {t:parseFloat(val).toFixed(0)+'%',   c:c.crit&&val>c.crit?'critical':c.warn&&val>c.warn?'warning':''};
+                case 'temp':   return {t:parseFloat(val).toFixed(1)+' °C', c:c.crit&&val>c.crit?'critical':c.warn&&val>c.warn?'warning':''};
+                case 'bool':   return {t:val?'RUNNING':'STOPPED',          c:val?'on':'off'};
+                case 'fault':  return {t:val?'FAULT '+val:'No Fault',      c:val?'critical':'on'};
+                case 'int':    return {t:String(val), c:''};
+                default:       return {t:String(val), c:''};
+            }
+        }
+        async function fetchVFD() {
+            try {
+                const r = await fetch('/api/vfd/status');
+                const comms = document.getElementById('vfdComms');
+                if (r.status === 503) {
+                    comms.textContent = 'Not connected';
+                    comms.style.color = '#555';
+                    return;
+                }
+                const tags = await r.json();
+                const g = document.getElementById('vfdGrid');
+                g.innerHTML = '';
+                for (const [k,c] of Object.entries(VFD_TC)) {
+                    const v = tags[k];
+                    if (v === undefined) continue;
+                    const f = fmtVfd(k, v, c);
+                    g.innerHTML += '<div class="tag-item"><span class="tag-name">'+c.label+'</span><span class="tag-value '+f.c+'">'+f.t+'</span></div>';
+                }
+                if (tags.vfd_comms_ok) {
+                    comms.textContent = 'Connected';
+                    comms.style.color = '#76b900';
+                } else {
+                    comms.textContent = 'Comms Lost';
+                    comms.style.color = '#ff4444';
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        fetchTags(); fetchFaults(); fetchVFD();
         setInterval(fetchTags, 2000);
         setInterval(fetchFaults, 3000);
+        setInterval(fetchVFD, 1000);
         document.getElementById('questionInput').addEventListener('keypress', e => {
             if (e.key === 'Enter') runDiagnosis();
         });

@@ -1,13 +1,15 @@
 """Pi-Factory Tag Server — FastAPI backend serving PLC tags, faults, and Cosmos AI.
 
 Endpoints:
-  GET  /api/tags      — latest tag snapshot
-  GET  /api/faults    — detected faults from current tags
-  POST /api/diagnose  — AI-powered diagnosis (Cosmos R2 or stub)
-  GET  /api/combined  — single call: tags + faults + last diagnosis
-  GET  /api/health    — service health
-  GET  /docs          — auto-generated OpenAPI docs
-  GET  /              — demo dashboard (fallback HMI)
+  GET  /api/tags       — latest tag snapshot (PLC + VFD merged)
+  GET  /api/faults     — detected faults from current tags
+  POST /api/diagnose   — AI-powered diagnosis (Cosmos R2 or stub)
+  GET  /api/combined   — single call: tags + faults + conflicts + last diagnosis
+  GET  /api/health     — service health
+  GET  /api/vfd/status — VFD-only live tags
+  GET  /api/conflicts  — VFD cross-reference conflict checks
+  GET  /docs           — auto-generated OpenAPI docs
+  GET  /               — demo dashboard (fallback HMI)
 
 Hardware switch (ANYBUS_HARDWARE env var):
   false (default) → PLCSimulator (in-memory fake tags)
@@ -72,6 +74,7 @@ def create_app(
     sim: PLCSimulator | None = None,
     cycler: DemoCycler | None = None,
     tachometer: Any | None = None,
+    vfd_reader: Any | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application."""
     cfg = config or Config.from_env()
@@ -93,7 +96,7 @@ def create_app(
 
     app = FastAPI(
         title="Pi-Factory",
-        version="1.5.0",
+        version="2.0.0",
         description="Industrial tag server with Cosmos R2 AI diagnosis",
     )
     app.add_middleware(
@@ -106,12 +109,32 @@ def create_app(
     # Shared state
     _state: dict[str, Any] = {
         "last_tags": {},
+        "last_vfd_tags": {},
         "last_insight": None,
         "start_time": time.monotonic(),
         "cycler": _cycler,
         "sim": _sim,
         "tachometer": tachometer,
+        "vfd_reader": vfd_reader,
     }
+
+    # Background VFD polling
+    @app.on_event("startup")
+    async def start_vfd_polling():
+        vfd = _state.get("vfd_reader")
+        if vfd is None:
+            return
+        logger.info("Starting VFD polling (%.1fs interval)", cfg.vfd_poll_interval_sec)
+
+        async def poll_loop():
+            while True:
+                try:
+                    _state["last_vfd_tags"] = await vfd.read_all_tags()
+                except Exception:
+                    logger.exception("VFD poll error")
+                await asyncio.sleep(cfg.vfd_poll_interval_sec)
+
+        asyncio.create_task(poll_loop())
 
     # ------------------------------------------------------------------
     # Endpoints
@@ -119,17 +142,31 @@ def create_app(
 
     @app.get("/api/tags")
     async def get_tags():
-        """Return latest tag snapshot."""
+        """Return latest tag snapshot (PLC + VFD merged)."""
         snap = tag_source()
         _state["last_tags"] = snap.to_dict() if isinstance(snap, TagSnapshot) else snap
-        return _state["last_tags"]
+        result = dict(_state["last_tags"])
+        vfd = _state.get("last_vfd_tags")
+        if vfd:
+            result.update(vfd)
+        return result
 
     @app.get("/api/faults")
     async def get_faults():
-        """Detect faults from current tags."""
+        """Detect faults from current tags (PLC + VFD + belt merged)."""
         tags = _state.get("last_tags") or (tag_source()).to_dict()
         _state["last_tags"] = tags if isinstance(tags, dict) else tags.to_dict()
-        faults = detect_faults(_state["last_tags"])
+        merged = dict(_state["last_tags"])
+        vfd = _state.get("last_vfd_tags")
+        if vfd:
+            merged.update(vfd)
+        # Inject belt tags for cross-reference
+        tach = _state.get("tachometer")
+        if tach is not None:
+            reading = tach._last_reading
+            merged["belt_rpm"] = reading.get("rpm", 0.0)
+            merged["belt_vision_status"] = reading.get("status", "")
+        faults = detect_faults(merged)
         return {
             "faults": [
                 {
@@ -199,18 +236,37 @@ def create_app(
 
     @app.get("/api/combined")
     async def combined():
-        """Single call: tags + faults + last diagnosis."""
+        """Single call: tags + VFD + faults + conflicts + last diagnosis."""
         tags = _state.get("last_tags") or (tag_source()).to_dict()
         _state["last_tags"] = tags if isinstance(tags, dict) else tags
-        faults = detect_faults(tags)
+        vfd_tags = _state.get("last_vfd_tags", {})
+
+        # Merge all for fault detection
+        merged = dict(tags)
+        if vfd_tags:
+            merged.update(vfd_tags)
+        tach = _state.get("tachometer")
+        if tach is not None:
+            reading = tach._last_reading
+            merged["belt_rpm"] = reading.get("rpm", 0.0)
+            merged["belt_vision_status"] = reading.get("status", "")
+
+        faults = detect_faults(merged)
+        conflicts = [
+            {"code": f.fault_code, "severity": f.severity.value, "title": f.title,
+             "description": f.description}
+            for f in faults if f.fault_code.startswith("V")
+        ]
         insight = _state.get("last_insight")
 
         return {
             "tags": tags,
+            "vfd_tags": vfd_tags,
             "faults": [
                 {"code": f.fault_code, "severity": f.severity.value, "title": f.title}
                 for f in faults
             ],
+            "conflicts": conflicts,
             "last_diagnosis": {
                 "summary": insight.summary if insight else None,
                 "thinking": insight.thinking if insight else None,
@@ -398,6 +454,53 @@ def create_app(
             mjpeg_generator(),
             media_type="multipart/x-mixed-replace; boundary=frame",
         )
+
+    # ------------------------------------------------------------------
+    # VFD endpoints
+    # ------------------------------------------------------------------
+
+    @app.get("/api/vfd/status")
+    async def vfd_status():
+        """Return VFD-only live tags."""
+        vfd = _state.get("vfd_reader")
+        if vfd is None:
+            return Response(content=b"No VFD configured — set VFD_HOST", status_code=503)
+        tags = _state.get("last_vfd_tags", {})
+        if not tags:
+            tags = await vfd.read_all_tags()
+            _state["last_vfd_tags"] = tags
+        return tags
+
+    @app.get("/api/conflicts")
+    async def conflicts():
+        """Return VFD cross-reference conflict checks (V001-V006)."""
+        tags = _state.get("last_tags") or {}
+        vfd_tags = _state.get("last_vfd_tags", {})
+        merged = dict(tags)
+        if vfd_tags:
+            merged.update(vfd_tags)
+        tach = _state.get("tachometer")
+        if tach is not None:
+            reading = tach._last_reading
+            merged["belt_rpm"] = reading.get("rpm", 0.0)
+            merged["belt_vision_status"] = reading.get("status", "")
+
+        faults = detect_faults(merged)
+        vfd_conflicts = [
+            {
+                "code": f.fault_code,
+                "severity": f.severity.value,
+                "title": f.title,
+                "description": f.description,
+                "causes": f.likely_causes,
+                "checks": f.suggested_checks,
+            }
+            for f in faults if f.fault_code.startswith("V")
+        ]
+        return {
+            "conflicts": vfd_conflicts,
+            "timestamp": datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
+        }
 
     return app
 

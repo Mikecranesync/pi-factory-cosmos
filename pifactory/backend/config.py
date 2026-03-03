@@ -30,6 +30,14 @@ class Config:
     # Video
     video_source: str = ""
 
+    # VFD Modbus TCP
+    vfd_host: str = ""
+    vfd_port: int = 502
+    vfd_slave_id: int = 1
+    vfd_poll_interval_sec: float = 1.0
+    vfd_register_map: str = ""
+    vfd_brand: str = "generic"
+
     # Server
     port: int = 8080
     host: str = "0.0.0.0"
@@ -53,6 +61,12 @@ class Config:
             allowed_chat_ids=allowed,
             anybus_hardware=os.getenv("ANYBUS_HARDWARE", "false").lower() == "true",
             video_source=os.getenv("VIDEO_SOURCE", ""),
+            vfd_host=os.getenv("VFD_HOST", ""),
+            vfd_port=int(os.getenv("VFD_PORT", "502")),
+            vfd_slave_id=int(os.getenv("VFD_SLAVE_ID", "1")),
+            vfd_poll_interval_sec=float(os.getenv("VFD_POLL_INTERVAL_SEC", "1.0")),
+            vfd_register_map=os.getenv("VFD_REGISTER_MAP", ""),
+            vfd_brand=os.getenv("VFD_BRAND", "generic"),
             port=int(os.getenv("PORT", "8080")),
             host=os.getenv("HOST", "0.0.0.0"),
         )
@@ -64,3 +78,7 @@ class Config:
     @property
     def has_telegram(self) -> bool:
         return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    @property
+    def has_vfd(self) -> bool:
+        return bool(self.vfd_host)

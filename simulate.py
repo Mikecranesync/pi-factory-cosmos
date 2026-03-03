@@ -106,14 +106,20 @@ def main() -> None:
         os.environ["NVIDIA_COSMOS_API_KEY"] = args.nim_key
     os.environ["PORT"] = str(args.port)
 
+    # Create config early so banner can show VFD status
+    from pifactory.backend.config import Config
+    cfg = Config.from_env()
+
     print(BANNER)
 
     nim_status = "REAL NIM" if args.nim_key else "STUB (no API key)"
     tg_status = "ENABLED" if args.telegram else "DISABLED"
+    vfd_status = f"ENABLED ({cfg.vfd_host}:{cfg.vfd_port})" if cfg.has_vfd else "DISABLED (set VFD_HOST)"
 
     print(f"  Mode:      Simulation (PLCSimulator + DemoCycler)")
     print(f"  Cosmos:    {nim_status}")
     print(f"  Telegram:  {tg_status}")
+    print(f"  VFD:       {vfd_status}")
     print(f"  Cycle:     {args.cycle}s (normal → warning → fault → recovery)")
     print(f"  Dashboard: http://localhost:{args.port}")
     print(f"  API Docs:  http://localhost:{args.port}/docs")
@@ -123,9 +129,6 @@ def main() -> None:
     # Create shared simulator + cycler FIRST
     from pifactory.simulator.plc_sim import PLCSimulator, DemoCycler
     from pifactory.backend.tag_server import create_app
-    from pifactory.backend.config import Config
-
-    cfg = Config.from_env()
     sim = PLCSimulator()
     cycler = DemoCycler(sim, cycle_seconds=args.cycle)
 
@@ -136,8 +139,21 @@ def main() -> None:
         tachometer = BeltTachometer()
         logger.info("Belt tachometer enabled (camera: %s)", cfg.video_source)
 
+    # VFD reader (if VFD_HOST is set)
+    vfd_reader = None
+    if cfg.has_vfd:
+        from pifactory.hardware.vfd_reader import VFDReader
+        vfd_reader = VFDReader(
+            host=cfg.vfd_host,
+            port=cfg.vfd_port,
+            slave_id=cfg.vfd_slave_id,
+            register_map_path=cfg.vfd_register_map,
+            brand=cfg.vfd_brand,
+        )
+        logger.info("VFD reader enabled (%s:%d)", cfg.vfd_host, cfg.vfd_port)
+
     # Create FastAPI app with the SAME sim instance
-    app = create_app(config=cfg, sim=sim, cycler=cycler, tachometer=tachometer)
+    app = create_app(config=cfg, sim=sim, cycler=cycler, tachometer=tachometer, vfd_reader=vfd_reader)
 
     # Start server in background thread
     logger.info("Starting tag server on :%d", args.port)

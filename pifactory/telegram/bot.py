@@ -25,6 +25,8 @@ from telegram.ext import (
     ContextTypes,
 )
 
+from pifactory.hardware.vfd_reader import VFD_FAULTS
+
 logger = logging.getLogger(__name__)
 
 # Load alarm descriptions
@@ -106,6 +108,25 @@ class PiFactoryBot:
         if ec:
             lines.append(f"\nFault: {_ALARMS.get(str(ec), f'Code {ec}')}")
 
+        # VFD section (only if VFD tags present)
+        vfd_hz = tags.get("vfd_output_hz")
+        if vfd_hz is not None:
+            vfd_set = float(tags.get("vfd_setpoint_hz", 0))
+            vfd_amps = float(tags.get("vfd_output_amps", 0))
+            vfd_torque = float(tags.get("vfd_torque_pct", 0))
+            vfd_temp = float(tags.get("vfd_drive_temp_c", 0))
+            vfd_fault = int(tags.get("vfd_fault_code", 0))
+            vfd_comms = tags.get("vfd_comms_ok", False)
+            lines.append("")
+            lines.append("VFD Status:")
+            lines.append(f"  Hz (out/set): {float(vfd_hz):.1f} / {vfd_set:.1f} Hz")
+            lines.append(f"  Current: {vfd_amps:.1f} A")
+            lines.append(f"  Torque: {vfd_torque:.0f}%")
+            lines.append(f"  Drive Temp: {vfd_temp:.1f} C")
+            fault_desc = VFD_FAULTS.get(vfd_fault, f"Code {vfd_fault}") if vfd_fault else "None"
+            lines.append(f"  Fault: {fault_desc}")
+            lines.append(f"  Comms: {'OK' if vfd_comms else 'LOST'}")
+
         await update.message.reply_text("\n".join(lines))
 
     async def cmd_see(self, update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -167,6 +188,21 @@ class PiFactoryBot:
             conflicts.append("Conveyor marked RUNNING but speed is 0 — possible jam or VFD fault")
         if not tags.get("e_stop") and not tags.get("motor_running") and tags.get("error_code", 0) == 0:
             conflicts.append("Motor stopped with no E-stop and no error — check start permissive")
+
+        # VFD cross-reference checks
+        vfd_hz = tags.get("vfd_output_hz")
+        if vfd_hz is not None:
+            vfd_hz_f = float(vfd_hz)
+            belt_rpm = float(tags.get("belt_rpm", tags.get("rpm", 0)))
+            if vfd_hz_f > 10 and belt_rpm < 5:
+                conflicts.append(f"VFD at {vfd_hz_f:.0f} Hz but belt RPM near zero — belt slip or jam")
+            if tags.get("vfd_run_status") and float(tags.get("vfd_output_amps", 0)) < 0.5:
+                conflicts.append("VFD running but no current drawn — check contactor or cable")
+            vfd_set = float(tags.get("vfd_setpoint_hz", 0))
+            if vfd_set > 5 and (vfd_set - vfd_hz_f) > 5:
+                conflicts.append(f"VFD can't reach setpoint ({vfd_set:.0f} Hz set, {vfd_hz_f:.0f} Hz actual) — overload?")
+            if int(tags.get("vfd_fault_code", 0)) > 0 and tags.get("motor_running"):
+                conflicts.append("VFD has active fault but PLC says motor running — feedback wiring issue")
 
         if not conflicts:
             await update.message.reply_text("No conflicts detected. Tags are consistent.")
