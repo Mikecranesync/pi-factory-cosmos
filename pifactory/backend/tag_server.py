@@ -464,7 +464,7 @@ def create_app(
         """Return VFD-only live tags."""
         vfd = _state.get("vfd_reader")
         if vfd is None:
-            return Response(content=b"No VFD configured — set VFD_HOST", status_code=503)
+            return Response(content=b"No VFD configured - set VFD_HOST", status_code=503)
         tags = _state.get("last_vfd_tags", {})
         if not tags:
             tags = await vfd.read_all_tags()
