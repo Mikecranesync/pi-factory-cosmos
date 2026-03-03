@@ -133,3 +133,65 @@ def build_status_summary_prompt(tags: Dict[str, Any], faults: List[FaultDiagnosi
         tags=tags,
         faults=faults,
     )
+
+
+# ---------------------------------------------------------------------------
+# Belt vision prompt (Cosmos R2 video diagnosis)
+# ---------------------------------------------------------------------------
+
+BELT_VISION_PROMPT = """\
+You are FactoryLM Vision analyzing a 5-second video clip of a conveyor belt
+alongside real-time PLC telemetry. An orange reference tape is affixed across
+the belt width; a vision-based tachometer is tracking it.
+
+## Live PLC Tags
+{tags_json}
+
+## Vision Tachometer Reading
+- RPM: {rpm:.1f}
+- Belt speed: {speed_pct:.0f}% of baseline
+- Tracking offset: {offset_px}px from calibrated center
+- Vision status: {vision_status}
+
+## Task
+1. Watch the belt motion in the video. Confirm or contradict the tachometer
+   reading above.
+2. Look for: belt slip, misalignment, material jam, loose tape, abnormal
+   vibration, or any visual anomaly.
+3. Cross-reference visual observations with the PLC tag values — flag any
+   discrepancy (e.g., motor register says ON but belt is not moving).
+4. Provide a root cause and recommended action.
+
+Answer using the following format:
+<think>Step-by-step reasoning about what you see in the video, what the PLC
+data reports, and what the tachometer measured. Note discrepancies.</think>
+
+<answer>
+diagnosis: One-sentence diagnosis.
+root_cause: Most likely root cause.
+visual_confirmation: What you observed in the video that supports your diagnosis.
+action: Recommended next step for the technician.
+confidence: 0.0-1.0
+</answer>"""
+
+
+def build_belt_vision_prompt(
+    tags: Dict[str, Any],
+    rpm: float,
+    speed_pct: float,
+    offset_px: int,
+    vision_status: str,
+) -> str:
+    """Fill the belt vision prompt template with live data."""
+    import json
+    tags_json = json.dumps(
+        {k: v for k, v in tags.items() if not k.startswith("_") and k not in ("id", "timestamp", "node_id")},
+        indent=2,
+    )
+    return BELT_VISION_PROMPT.format(
+        tags_json=tags_json,
+        rpm=rpm,
+        speed_pct=speed_pct,
+        offset_px=offset_px,
+        vision_status=vision_status,
+    )

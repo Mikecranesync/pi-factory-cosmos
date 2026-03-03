@@ -71,6 +71,7 @@ def create_app(
     config: Config | None = None,
     sim: PLCSimulator | None = None,
     cycler: DemoCycler | None = None,
+    tachometer: Any | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application."""
     cfg = config or Config.from_env()
@@ -92,7 +93,7 @@ def create_app(
 
     app = FastAPI(
         title="Pi-Factory",
-        version="1.0.0",
+        version="1.5.0",
         description="Industrial tag server with Cosmos R2 AI diagnosis",
     )
     app.add_middleware(
@@ -109,6 +110,7 @@ def create_app(
         "start_time": time.monotonic(),
         "cycler": _cycler,
         "sim": _sim,
+        "tachometer": tachometer,
     }
 
     # ------------------------------------------------------------------
@@ -276,6 +278,126 @@ def create_app(
         """Serve the live webcam page."""
         from pifactory.hmi.camera_page import render_camera_page
         return render_camera_page()
+
+    # ------------------------------------------------------------------
+    # Belt tachometer endpoints
+    # ------------------------------------------------------------------
+
+    @app.get("/api/belt/status")
+    async def belt_status():
+        """Return latest belt tachometer reading (no Cosmos call)."""
+        tach = _state.get("tachometer")
+        if tach is None:
+            return Response(content=b"No belt tachometer configured", status_code=503)
+
+        reading = tach._last_reading
+        result = {
+            "rpm": reading.get("rpm", 0.0),
+            "speed_pct": reading.get("belt_speed_pct", 0.0),
+            "offset_px": reading.get("tracking_offset_px", 0),
+            "status": reading.get("status", "STOPPED"),
+            "timestamp": datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
+        }
+
+        # Include annotated frame as base64 if available
+        frame = reading.get("annotated_frame")
+        if frame is not None:
+            try:
+                import cv2
+                _, buf = cv2.imencode(".jpg", frame)
+                import base64
+                result["annotated_frame_b64"] = base64.b64encode(buf.tobytes()).decode()
+            except Exception:
+                pass
+
+        return result
+
+    @app.post("/api/belt/diagnose")
+    async def belt_diagnose():
+        """Trigger Cosmos R2 video diagnosis of the belt."""
+        tach = _state.get("tachometer")
+        if tach is None:
+            return Response(content=b"No belt tachometer configured", status_code=503)
+
+        reading = tach._last_reading
+
+        # If belt is normal, skip the expensive Cosmos call
+        if reading.get("status") == "NORMAL":
+            return {
+                "tachometer": {
+                    "rpm": reading.get("rpm", 0.0),
+                    "speed_pct": reading.get("belt_speed_pct", 0.0),
+                    "offset_px": reading.get("tracking_offset_px", 0),
+                    "status": "NORMAL",
+                },
+                "cosmos": None,
+                "tags": _state.get("last_tags", {}),
+                "timestamp": datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
+            }
+
+        # Get clip and run diagnosis
+        clip = tach.get_clip_buffer()
+        tags = _state.get("last_tags") or {}
+        if not tags:
+            snap = tag_source()
+            tags = snap.to_dict() if isinstance(snap, TagSnapshot) else snap
+            _state["last_tags"] = tags
+
+        tach_dict = {
+            "rpm": reading.get("rpm", 0.0),
+            "belt_speed_pct": reading.get("belt_speed_pct", 0.0),
+            "tracking_offset_px": reading.get("tracking_offset_px", 0),
+            "status": reading.get("status", "STOPPED"),
+        }
+
+        cosmos_result = await reasoner.diagnose_belt_video(clip, tags, tach_dict)
+
+        return {
+            "tachometer": tach_dict,
+            "cosmos": cosmos_result,
+            "tags": tags,
+            "timestamp": datetime.datetime.now(tz=datetime.timezone.utc).isoformat(),
+        }
+
+    @app.get("/api/belt/stream")
+    async def belt_stream():
+        """MJPEG stream of annotated belt frames with tachometer overlay."""
+        tach = _state.get("tachometer")
+        if tach is None:
+            return Response(content=b"No belt tachometer configured", status_code=503)
+
+        if not cfg.video_source:
+            return Response(content=b"No video source configured", status_code=503)
+
+        from pifactory.cosmos.frame_capture import capture_stream
+
+        async def mjpeg_generator():
+            try:
+                import cv2
+                import numpy as np
+            except ImportError:
+                return
+
+            for jpeg in capture_stream(cfg.video_source, fps=10):
+                frame = cv2.imdecode(
+                    np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR
+                )
+                if frame is not None:
+                    reading = tach.process_frame(frame)
+                    annotated = reading.get("annotated_frame")
+                    if annotated is not None:
+                        _, buf = cv2.imencode(".jpg", annotated)
+                        jpeg = buf.tobytes()
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                )
+                await asyncio.sleep(0)
+
+        return StreamingResponse(
+            mjpeg_generator(),
+            media_type="multipart/x-mixed-replace; boundary=frame",
+        )
 
     return app
 

@@ -129,8 +129,15 @@ def main() -> None:
     sim = PLCSimulator()
     cycler = DemoCycler(sim, cycle_seconds=args.cycle)
 
+    # Belt tachometer (if camera available)
+    tachometer = None
+    if cfg.video_source:
+        from pifactory.cosmos.belt_tachometer import BeltTachometer
+        tachometer = BeltTachometer()
+        logger.info("Belt tachometer enabled (camera: %s)", cfg.video_source)
+
     # Create FastAPI app with the SAME sim instance
-    app = create_app(config=cfg, sim=sim, cycler=cycler)
+    app = create_app(config=cfg, sim=sim, cycler=cycler, tachometer=tachometer)
 
     # Start server in background thread
     logger.info("Starting tag server on :%d", args.port)
@@ -161,9 +168,29 @@ def main() -> None:
     # so dashboard always sees the latest state including phase transitions.
     tick_count = 0
 
+    belt_status = None
+
     while not stop.is_set():
         snap = cycler.tick(interval_ms=args.interval)
         tick_count += 1
+
+        # Process camera frame through belt tachometer
+        if tachometer and cfg.video_source:
+            from pifactory.cosmos.frame_capture import capture_frame
+            try:
+                import cv2
+                import numpy as np
+            except ImportError:
+                cv2 = None  # type: ignore[assignment]
+                np = None  # type: ignore[assignment]
+
+            if cv2 is not None:
+                jpeg = capture_frame(cfg.video_source)
+                if jpeg:
+                    frame = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        belt_status = tachometer.process_frame(frame)
+
         if tick_count % 20 == 0:  # Every 10 seconds at 500ms interval
             phase = cycler.phase.value
             ec = snap.error_code
@@ -173,6 +200,13 @@ def main() -> None:
                 "Phase: %-8s | Err: %d | Temp: %.1f°C | Current: %.1fA",
                 phase, ec, temp, cur,
             )
+            if tachometer and belt_status:
+                logger.info(
+                    "Belt: %s | RPM: %.1f | Offset: %dpx",
+                    belt_status["status"],
+                    belt_status["rpm"],
+                    belt_status["tracking_offset_px"],
+                )
 
         stop.wait(args.interval / 1000.0)
 

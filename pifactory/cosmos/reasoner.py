@@ -7,11 +7,13 @@ Parses <think> blocks from Cosmos R2 reasoning output.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import datetime
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -103,6 +105,91 @@ class CosmosReasoner:
             return await self._analyze_real(incident_id, node_id, tags, video_url, context)
         logger.info("CosmosReasoner: no API key — returning stub for %s", incident_id)
         return self._stub(incident_id, node_id, tags, video_url)
+
+    async def diagnose_belt_video(
+        self,
+        clip_bytes: bytes,
+        tags: dict,
+        tachometer: dict,
+    ) -> dict:
+        """Diagnose belt issues using a video clip + PLC tags via Cosmos R2.
+
+        Args:
+            clip_bytes: Raw mp4 bytes from BeltTachometer.get_clip_buffer()
+            tags: Current PLC tag snapshot dict
+            tachometer: {rpm, belt_speed_pct, tracking_offset_px, status}
+
+        Returns:
+            {reasoning, diagnosis, root_cause, visual_confirmation,
+             action, confidence, latency_ms}
+        """
+        from pifactory.cosmos.prompts import build_belt_vision_prompt
+
+        t0 = time.monotonic()
+
+        if not self.api_key:
+            logger.info("CosmosReasoner: no API key — returning belt stub")
+            return self._belt_stub(tachometer, t0)
+
+        prompt = build_belt_vision_prompt(
+            tags=tags,
+            rpm=tachometer.get("rpm", 0.0),
+            speed_pct=tachometer.get("belt_speed_pct", 100.0),
+            offset_px=tachometer.get("tracking_offset_px", 0),
+            vision_status=tachometer.get("status", "NORMAL"),
+        )
+
+        b64_video = base64.b64encode(clip_bytes).decode("utf-8")
+        video_url = f"data:video/mp4;base64,{b64_video}"
+
+        content: list[dict] = [
+            {"type": "text", "text": prompt},
+            {"type": "video_url", "video_url": {"url": video_url}},
+        ]
+
+        model = self.active_model
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                resp = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": content}],
+                        "temperature": self.temperature,
+                        "top_p": self.top_p,
+                        "max_tokens": self.max_tokens,
+                        "extra_body": {
+                            "media_io_kwargs": {"video": {"fps": 3.0}},
+                        },
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            raw = data["choices"][0]["message"]["content"]
+            thinking, answer = parse_think_blocks(raw)
+
+            # Parse <answer> block
+            parsed = self._parse_belt_answer(answer)
+            latency_ms = int((time.monotonic() - t0) * 1000)
+
+            return {
+                "reasoning": thinking,
+                "diagnosis": parsed.get("diagnosis", answer[:200]),
+                "root_cause": parsed.get("root_cause", "See full response"),
+                "visual_confirmation": parsed.get("visual_confirmation", ""),
+                "action": parsed.get("action", ""),
+                "confidence": float(parsed.get("confidence", 0.5)),
+                "latency_ms": latency_ms,
+            }
+
+        except Exception:
+            logger.exception("Belt video diagnosis failed — falling back to stub")
+            return self._belt_stub(tachometer, t0)
 
     # ------------------------------------------------------------------
     # Real API call
@@ -343,3 +430,63 @@ class CosmosReasoner:
             video_url=video_url,
             cosmos_model=self.model + " (stub)",
         )
+
+    def _belt_stub(self, tachometer: dict, t0: float) -> dict:
+        """Return a stub belt diagnosis based on tachometer status."""
+        status = tachometer.get("status", "NORMAL")
+        stubs = {
+            "NORMAL": {
+                "diagnosis": "Belt running within normal parameters.",
+                "root_cause": "N/A — no fault present",
+                "visual_confirmation": "Orange tape crossing centerline at steady interval.",
+                "action": "Continue normal monitoring.",
+                "confidence": 0.95,
+            },
+            "SLOW": {
+                "diagnosis": "Belt speed degraded below 80% of baseline.",
+                "root_cause": "Possible VFD frequency drop, belt slip, or increased load",
+                "visual_confirmation": "Orange tape crossings slower than baseline interval.",
+                "action": "Check VFD output frequency, belt tension, and load.",
+                "confidence": 0.75,
+            },
+            "MISTRACK": {
+                "diagnosis": "Belt tracking misaligned — tape drifting from center.",
+                "root_cause": "Belt tension imbalance or roller misalignment",
+                "visual_confirmation": "Orange tape centroid offset >50px from calibrated center.",
+                "action": "Inspect belt tension and roller alignment. Adjust tracking.",
+                "confidence": 0.70,
+            },
+            "STOPPED": {
+                "diagnosis": "Belt stopped — no tape crossing detected for >3 seconds.",
+                "root_cause": "Motor de-energized, VFD fault, or mechanical jam",
+                "visual_confirmation": "No motion detected in video. Orange tape stationary.",
+                "action": "Check motor contactor, VFD status, and E-stop circuit.",
+                "confidence": 0.90,
+            },
+        }
+        resp = stubs.get(status, stubs["NORMAL"])
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        return {
+            "reasoning": f"Stub diagnosis based on tachometer status: {status}",
+            "diagnosis": resp["diagnosis"],
+            "root_cause": resp["root_cause"],
+            "visual_confirmation": resp["visual_confirmation"],
+            "action": resp["action"],
+            "confidence": resp["confidence"],
+            "latency_ms": latency_ms,
+        }
+
+    @staticmethod
+    def _parse_belt_answer(text: str) -> dict:
+        """Parse the <answer> block from belt diagnosis output."""
+        answer_match = re.search(r"<answer>(.*?)</answer>", text, re.DOTALL)
+        block = answer_match.group(1) if answer_match else text
+
+        result: dict = {}
+        for line in block.strip().splitlines():
+            line = line.strip()
+            if ":" in line:
+                key, _, value = line.partition(":")
+                key = key.strip().lower().replace(" ", "_")
+                result[key] = value.strip()
+        return result
